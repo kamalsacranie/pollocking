@@ -1,9 +1,17 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE RecordWildCards #-}
+
 import Data.Bifunctor (Bifunctor (second))
 import Data.List (intercalate)
 import Data.Maybe (fromJust, fromMaybe)
 import Data.Sequence (mapWithIndex)
 import Data.Text.Internal.Fusion.Size (Size)
 
+{- How to do sizeable things
+- We can have some new leaf type
+- We can give a flag to node variants? -}
+
+-- feels like node-variant should be replaced with some record with common config and the node idk.
 data Element a
   = Node a NodeVariant [Element a]
   | Leaf a Char
@@ -31,24 +39,57 @@ elementReplaceMD node md = case node of
   Node _ t es -> Node md t es
   Leaf _ c -> Leaf md c
 
+printConfig EConf {fillWidth, fillHeight} = print fillWidth
+
+class Default a where
+  def :: a
+
+data CommonConf where
+  EConf :: {fillWidth :: Bool, fillHeight :: Bool, containerFill :: Char, minHeight :: Word, minWidth :: Word} -> CommonConf
+  deriving (Show, Eq)
+
+instance Default CommonConf where
+  def = EConf {fillWidth = False, fillHeight = False, containerFill = ' ', minHeight = 0, minWidth = 0}
+
+data RowConf where
+  RowConf :: {} -> RowConf
+  deriving (Show, Eq)
+
+instance Default RowConf where
+  def = RowConf {}
+
+data ColConf where
+  ColConf :: {} -> ColConf
+  deriving (Show, Eq)
+
+instance Default ColConf where
+  def = ColConf {}
+
 data NodeVariant
-  = Row
-  | Col
+  = Row CommonConf RowConf
+  | Col CommonConf ColConf
   deriving (Show, Eq)
 
 freshNode = Node ()
 
-row = freshNode Row
+-- Figure out how to generate econf using optional rguments field etc idk.
+row = freshNode (Row def RowConf {})
 
-col = freshNode Col
+rowWith :: CommonConf -> RowConf -> [Element ()] -> Element ()
+rowWith conf rconf = freshNode (Row conf rconf)
+
+col = freshNode (Col def ColConf {})
+
+colWith :: CommonConf -> ColConf -> [Element ()] -> Element ()
+colWith conf cconf = freshNode (Col def cconf)
 
 leaf = Leaf ()
 
 text = row . map leaf
 
-calcSizes :: Element () -> Element SizeMD
-calcSizes (Node _ ty es) =
-  let es' = map calcSizes es
+calcFixedSizes :: Element () -> Element SizeMD
+calcFixedSizes (Node _ ty es) =
+  let es' = map calcFixedSizes es
       size =
         foldl
           ( \acc e ->
@@ -58,25 +99,25 @@ calcSizes (Node _ ty es) =
           )
           (0, 0)
           es'
-   in Node (SizeMD {size = size}) ty (map calcSizes es)
+   in Node (SizeMD {size = size}) ty (map calcFixedSizes es)
   where
     resize ty (rows, cols) (rows', cols') = case ty of
-      Row -> (max rows rows', cols + cols')
-      Col -> (rows + rows', max cols cols')
-calcSizes (Leaf () c) = Leaf (SizeMD {size = (1, 1)}) c
+      Row _ _ -> (max rows rows', cols + cols')
+      Col _ _ -> (rows + rows', max cols cols')
+calcFixedSizes (Leaf () c) = Leaf (SizeMD {size = (1, 1)}) c
 
 calcPosition :: Element SizeMD -> Element SizeRPosMD
-calcPosition (Node (SizeMD {size}) Row es) =
+calcPosition (Node (SizeMD {size}) row@(Row _ _) es) =
   let (_, es') = foldl (\(col, result) -> second (: result) . updateMetadataAndCurrentCol col) (0, []) (map calcPosition es)
-   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) Row (reverse es')
+   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) row (reverse es')
   where
     updateMetadataAndCurrentCol col e =
       let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD {relativePosition}} = elementMD e
           col' = snd size + col
        in (col', elementReplaceMD e (SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD (fst relativePosition, col)}))
-calcPosition (Node (SizeMD {size}) Col es) =
+calcPosition (Node (SizeMD {size}) col@(Col _ _) es) =
   let (_, es') = foldl (\(row, result) -> second (: result) . updateMetadataAndCurrentRow row) (0, []) (map calcPosition es)
-   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) Col (reverse es')
+   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) col (reverse es')
   where
     updateMetadataAndCurrentRow row e =
       let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD {relativePosition}} = elementMD e
@@ -84,38 +125,47 @@ calcPosition (Node (SizeMD {size}) Col es) =
        in (row', elementReplaceMD e (SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD (row, snd relativePosition)}))
 calcPosition (Leaf (SizeMD {size}) c) = Leaf (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) c
 
-createBlankCanvas :: (Int, Int) -> [String]
-createBlankCanvas (row, col) = replicate row (replicate col ' ')
+createCanvas :: Char -> (Int, Int) -> [String]
+createCanvas c (row, col) = replicate row (replicate col c)
 
-splice :: Int -> [a] -> [a] -> [a]
+-- why can i not figure out how to make this n-dimentional
+splice :: Int -> [Char] -> [Char] -> [Char]
 splice start original replacement =
   let (pre, rest) = splitAt start original
-   in let (_, rest') = splitAt (length replacement) rest
-       in pre ++ replacement ++ rest'
+   in let (original', rest') = splitAt (length replacement) rest
+       in pre ++ zipWith (\o r -> if r == ' ' then o else r) original' replacement ++ rest'
 
-drawOnCanvas :: [[a]] -> [[a]] -> (Int, Int) -> [[a]]
+drawOnCanvas :: [[Char]] -> [[Char]] -> (Int, Int) -> [[Char]]
 drawOnCanvas baseCanvas canvas (topLeftX, topLeftY) =
   let (pre, rest) = splitAt topLeftX baseCanvas
    in let (rows, rest') = splitAt (length canvas) rest
        in pre ++ zipWith (splice topLeftY) rows canvas ++ rest'
 
+mapContainerCommonConf ty f = case ty of
+  Row conf rconf -> Row (f conf) rconf
+  Col conf cconf -> Col (f conf) cconf
+
+containerCommonConf ty f = case ty of
+  Row conf rconf -> f conf
+  Col conf cconf -> f conf
+
 render :: Element SizeRPosMD -> [[Char]]
-render (Node (SizeRPosMD {sizeTemp = (SizeMD {size}), relativePositionTemp = (RPosMD {relativePosition})}) _ es) =
+render (Node (SizeRPosMD {sizeTemp = (SizeMD {size}), relativePositionTemp = (RPosMD {relativePosition})}) ty es) =
   let renderedChildrenAndMD = zip (map elementMD es) (map render es)
    in foldl
         (\acc (SizeRPosMD {relativePositionTemp = (RPosMD {relativePosition})}, child) -> drawOnCanvas acc child relativePosition)
-        (createBlankCanvas size)
+        (createCanvas (containerCommonConf ty containerFill) size)
         renderedChildrenAndMD
 render (Leaf _ c) = [[c]]
 
 myPara =
-  row
+  (fill '•' . row)
     [ col
         [ text "This is the first column",
           -- sizable '-',
           text "Hello"
         ],
-      -- sizable '|',
+      vSizable '|',
       col
         [ text "This is the second column",
           -- sizable '-',
@@ -123,10 +173,24 @@ myPara =
         ]
     ]
 
+fill :: Char -> Element a -> Element a
+fill c (Node md ty es) =
+  let recordUpdate conf = conf {containerFill = c}
+   in Node
+        md
+        (mapContainerCommonConf ty recordUpdate)
+        es
+fill c (Leaf md _) = Leaf md c
+
+-- it's feeling like I will have to have some Box type as much as i don't want it??
+hSizable c = rowWith (def {containerFill = c, minHeight = 1}) def []
+
+vSizable c = colWith (def {containerFill = c, minWidth = 1}) def []
+
 myTree = myPara
 
 main = do
-  let myTree' = calcSizes myTree
+  let myTree' = calcFixedSizes myPara
   let myTree'' = calcPosition myTree'
   -- let temp = tempDraw myTree''
   let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp} = elementMD myTree''
