@@ -1,11 +1,21 @@
+{-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecordWildCards #-}
 
+import Control.Exception (throwIO)
+import Control.Monad (when)
+import Control.Monad.Trans.Maybe (MaybeT (runMaybeT))
 import Data.Bifunctor (Bifunctor (second))
-import Data.List (intercalate)
-import Data.Maybe (fromJust, fromMaybe)
+import Data.List (intercalate, partition)
+import Data.Maybe (fromJust, fromMaybe, isNothing, mapMaybe)
 import Data.Sequence (mapWithIndex)
 import Data.Text.Internal.Fusion.Size (Size)
+import Distribution.Utils.String (trim)
+import System.Process (readProcess)
+import Text.Read (readMaybe)
 
 {- How to do sizeable things
 - We can have some new leaf type
@@ -26,8 +36,8 @@ data RPosMD where
   deriving (Show)
 
 data SizeRPosMD = SizeRPosMD
-  { sizeTemp :: SizeMD,
-    relativePositionTemp :: RPosMD
+  { size :: SizeMD,
+    relativePosition :: RPosMD
   }
   deriving (Show)
 
@@ -44,12 +54,15 @@ printConfig EConf {fillWidth, fillHeight} = print fillWidth
 class Default a where
   def :: a
 
+data Measure = Precise Int | Proportion
+  deriving (Show, Eq)
+
 data CommonConf where
-  EConf :: {fillWidth :: Bool, fillHeight :: Bool, containerFill :: Char, minHeight :: Word, minWidth :: Word} -> CommonConf
+  EConf :: {fillWidth :: Bool, fillHeight :: Bool, containerFill :: Char, minHeight :: Measure, minWidth :: Measure} -> CommonConf
   deriving (Show, Eq)
 
 instance Default CommonConf where
-  def = EConf {fillWidth = False, fillHeight = False, containerFill = ' ', minHeight = 0, minWidth = 0}
+  def = EConf {fillWidth = False, fillHeight = False, containerFill = ' ', minHeight = Precise 0, minWidth = Precise 0}
 
 data RowConf where
   RowConf :: {} -> RowConf
@@ -94,8 +107,8 @@ calcFixedSizes (Node _ ty es) =
         foldl
           ( \acc e ->
               case e of
-                Node (SizeMD {size = s}) _ _ -> resize ty acc s
-                Leaf (SizeMD {size = s}) _ -> resize ty acc s
+                Node md _ _ -> resize ty acc md.size
+                Leaf md _ -> resize ty acc md.size
           )
           (0, 0)
           es'
@@ -109,21 +122,21 @@ calcFixedSizes (Leaf () c) = Leaf (SizeMD {size = (1, 1)}) c
 calcPosition :: Element SizeMD -> Element SizeRPosMD
 calcPosition (Node (SizeMD {size}) row@(Row _ _) es) =
   let (_, es') = foldl (\(col, result) -> second (: result) . updateMetadataAndCurrentCol col) (0, []) (map calcPosition es)
-   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) row (reverse es')
+   in Node (SizeRPosMD {size = SizeMD size, relativePosition = RPosMD (0, 0)}) row (reverse es')
   where
     updateMetadataAndCurrentCol col e =
-      let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD {relativePosition}} = elementMD e
+      let SizeRPosMD {size = SizeMD {size}, relativePosition = RPosMD {relativePosition}} = elementMD e
           col' = snd size + col
-       in (col', elementReplaceMD e (SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD (fst relativePosition, col)}))
+       in (col', elementReplaceMD e (SizeRPosMD {size = SizeMD {size}, relativePosition = RPosMD (fst relativePosition, col)}))
 calcPosition (Node (SizeMD {size}) col@(Col _ _) es) =
   let (_, es') = foldl (\(row, result) -> second (: result) . updateMetadataAndCurrentRow row) (0, []) (map calcPosition es)
-   in Node (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) col (reverse es')
+   in Node (SizeRPosMD {size = SizeMD size, relativePosition = RPosMD (0, 0)}) col (reverse es')
   where
     updateMetadataAndCurrentRow row e =
-      let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD {relativePosition}} = elementMD e
+      let SizeRPosMD {size = SizeMD {size}, relativePosition = RPosMD {relativePosition}} = elementMD e
           row' = fst size + row
-       in (row', elementReplaceMD e (SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp = RPosMD (row, snd relativePosition)}))
-calcPosition (Leaf (SizeMD {size}) c) = Leaf (SizeRPosMD {sizeTemp = SizeMD size, relativePositionTemp = RPosMD (0, 0)}) c
+       in (row', elementReplaceMD e (SizeRPosMD {size = SizeMD {size}, relativePosition = RPosMD (row, snd relativePosition)}))
+calcPosition (Leaf (SizeMD {size}) c) = Leaf (SizeRPosMD {size = SizeMD size, relativePosition = RPosMD (0, 0)}) c
 
 createCanvas :: Char -> (Int, Int) -> [String]
 createCanvas c (row, col) = replicate row (replicate col c)
@@ -150,10 +163,10 @@ containerCommonConf ty f = case ty of
   Col conf cconf -> f conf
 
 render :: Element SizeRPosMD -> [[Char]]
-render (Node (SizeRPosMD {sizeTemp = (SizeMD {size}), relativePositionTemp = (RPosMD {relativePosition})}) ty es) =
+render (Node (SizeRPosMD {size = (SizeMD {size}), relativePosition = (RPosMD {relativePosition})}) ty es) =
   let renderedChildrenAndMD = zip (map elementMD es) (map render es)
    in foldl
-        (\acc (SizeRPosMD {relativePositionTemp = (RPosMD {relativePosition})}, child) -> drawOnCanvas acc child relativePosition)
+        (\acc (SizeRPosMD {relativePosition = (RPosMD {relativePosition})}, child) -> drawOnCanvas acc child relativePosition)
         (createCanvas (containerCommonConf ty containerFill) size)
         renderedChildrenAndMD
 render (Leaf _ c) = [[c]]
@@ -165,7 +178,8 @@ myPara =
           -- sizable '-',
           text "Hello"
         ],
-      vSizable '|',
+      -- vSizable '|',
+      hSizable '-',
       col
         [ text "This is the second column",
           -- sizable '-',
@@ -183,15 +197,52 @@ fill c (Node md ty es) =
 fill c (Leaf md _) = Leaf md c
 
 -- it's feeling like I will have to have some Box type as much as i don't want it??
-hSizable c = rowWith (def {containerFill = c, minHeight = 1}) def []
+hSizable c = rowWith (def {containerFill = c, minHeight = Precise 1, minWidth = Proportion}) def []
 
-vSizable c = colWith (def {containerFill = c, minWidth = 1}) def []
+vSizable c = colWith (def {containerFill = c, minHeight = Proportion, minWidth = Precise 1}) def []
 
 myTree = myPara
 
+measureSize m = case m of Proportion -> Nothing; Precise x -> Just x
+
+measureSizeOr d m = fromMaybe d (measureSize m)
+
+nodeIsProportional = \case (Node _ (Row EConf {minWidth = Proportion} _) _) -> True; _ -> False
+
+calcHorizontalVariableSizes :: Element SizeMD -> Int -> Element SizeMD
+calcHorizontalVariableSizes (Node SizeMD {size = (rowSize, colSize)} ty@(Row EConf {minWidth, minHeight} _) es) freeWidth =
+  let (proportionalNodes, fixedNodes) = partition nodeIsProportional es
+   in let newWidth = if (not . null) proportionalNodes then freeWidth else max (measureSizeOr colSize minWidth) colSize
+          remainingVariableWidth =
+            foldl
+              ( \acc SizeMD {size = (_, colSize)} ->
+                  max 0 (acc - colSize)
+              )
+              newWidth
+              (map elementMD fixedNodes)
+          temp (Node SizeMD {size = (rowSize, colSize)} ty@(Row EConf {minWidth = Proportion} _) es) =
+            calcHorizontalVariableSizes (Node SizeMD {size = (rowSize, remainingVariableWidth)} ty es) remainingVariableWidth
+          temp x =
+            calcHorizontalVariableSizes x remainingVariableWidth
+       in Node SizeMD {size = (max rowSize (measureSizeOr 1 minHeight), max newWidth (measureSizeOr 0 minWidth))} ty (map temp es)
+calcHorizontalVariableSizes (Node SizeMD {size = (r, c)} col@(Col EConf {minWidth, minHeight} _) es) width =
+  Node SizeMD {size = (max r (measureSizeOr 1 minHeight), max c (max width (measureSizeOr width minWidth)))} col $
+    map (`calcHorizontalVariableSizes` width) es
+calcHorizontalVariableSizes leaf@(Leaf _ _) _ = leaf
+
+getTerminalSize =
+  ( \case
+      [cols, rows] -> Just (cols, rows)
+      _ -> Nothing
+  )
+    . (mapMaybe readMaybe :: [String] -> [Int])
+    . take 2
+    -- Maybe use a function that doesn't throw here? or handle the throw I guess
+    <$> mapM (flip (readProcess "tput") "") [["lines"], ["cols"]]
+
 main = do
-  let myTree' = calcFixedSizes myPara
-  let myTree'' = calcPosition myTree'
-  -- let temp = tempDraw myTree''
-  let SizeRPosMD {sizeTemp = SizeMD {size}, relativePositionTemp} = elementMD myTree''
-  putStrLn $ intercalate "\n" (render myTree'')
+  (rows, cols) <- fromMaybe (error "Could not obtain terminal size. Are you running in a tty?") <$> getTerminalSize
+  let myTree1 = calcFixedSizes myPara
+  let myTree2 = calcHorizontalVariableSizes myTree1 cols
+  let myTree3 = calcPosition myTree2
+  putStrLn $ intercalate "\n" (render myTree3)
