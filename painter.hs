@@ -17,9 +17,20 @@ import Distribution.Utils.String (trim)
 import System.Process (readProcess)
 import Text.Read (readMaybe)
 
-{- How to do sizeable things
-- We can have some new leaf type
-- We can give a flag to node variants? -}
+{-
+Takeaways from sizing like this:
+
+- We can have just one metadata with no maybe values, just ints. Metadata simply needs to be size and relative position
+- It is okay for metadata to default to 0; it just means all the elements are 0 w,h and all on top of each other
+- Then our functions can just modify the position and size
+- Maybe having spacers in our tree is more explicit? can we find a way of having an orientation independent spacer? maybe...
+- I feel like instead of having () for calculating the size of the tree for the first time, we could almost auto populate the size creation of the tree when we're building it?
+  Like in the functions row, col, text etc
+- use width and height instead of rows and cols
+- I also prefer referring to width first and then height, so we have to swap i suppose
+- Instead of having size this size that, we should have a width of, horizontal widht of, etc.
+- Common conf should be put in node and not node type
+-}
 
 -- feels like node-variant should be replaced with some record with common config and the node idk.
 data Element a
@@ -54,7 +65,7 @@ printConfig EConf {fillWidth, fillHeight} = print fillWidth
 class Default a where
   def :: a
 
-data Measure = Precise Int | Proportion
+data Measure = Precise Int | Fit
   deriving (Show, Eq)
 
 data CommonConf where
@@ -94,15 +105,20 @@ rowWith conf rconf = freshNode (Row conf rconf)
 col = freshNode (Col def ColConf {})
 
 colWith :: CommonConf -> ColConf -> [Element ()] -> Element ()
-colWith conf cconf = freshNode (Col def cconf)
+colWith conf cconf = freshNode (Col conf cconf)
 
 leaf = Leaf ()
 
 text = row . map leaf
 
+nodeVariantCommonConf = \case
+  Col c _ -> c
+  Row c _ -> c
+
 calcFixedSizes :: Element () -> Element SizeMD
 calcFixedSizes (Node _ ty es) =
   let es' = map calcFixedSizes es
+      eConf = nodeVariantCommonConf ty
       size =
         foldl
           ( \acc e ->
@@ -110,7 +126,7 @@ calcFixedSizes (Node _ ty es) =
                 Node md _ _ -> resize ty acc md.size
                 Leaf md _ -> resize ty acc md.size
           )
-          (0, 0)
+          (measureSizeOr 0 eConf.minHeight, measureSizeOr 0 eConf.minWidth)
           es'
    in Node (SizeMD {size = size}) ty (map calcFixedSizes es)
   where
@@ -171,22 +187,6 @@ render (Node (SizeRPosMD {size = (SizeMD {size}), relativePosition = (RPosMD {re
         renderedChildrenAndMD
 render (Leaf _ c) = [[c]]
 
-myPara =
-  (fill '•' . row)
-    [ col
-        [ text "This is the first column",
-          -- sizable '-',
-          text "Hello"
-        ],
-      -- vSizable '|',
-      hSizable '-',
-      col
-        [ text "This is the second column",
-          -- sizable '-',
-          text "World"
-        ]
-    ]
-
 fill :: Char -> Element a -> Element a
 fill c (Node md ty es) =
   let recordUpdate conf = conf {containerFill = c}
@@ -197,38 +197,97 @@ fill c (Node md ty es) =
 fill c (Leaf md _) = Leaf md c
 
 -- it's feeling like I will have to have some Box type as much as i don't want it??
-hSizable c = rowWith (def {containerFill = c, minHeight = Precise 1, minWidth = Proportion}) def []
+hSizable c = rowWith (def {containerFill = c, minHeight = Precise 1, minWidth = Fit}) def []
 
-vSizable c = colWith (def {containerFill = c, minHeight = Proportion, minWidth = Precise 1}) def []
+vSizable c = colWith (def {containerFill = c, minHeight = Fit, minWidth = Precise 1}) def []
 
 myTree = myPara
 
-measureSize m = case m of Proportion -> Nothing; Precise x -> Just x
+measureIsPrecise m = case m of Precise _ -> True; _ -> False
+
+measureSize m = case m of Fit -> Nothing; Precise x -> Just x
 
 measureSizeOr d m = fromMaybe d (measureSize m)
 
-nodeIsProportional = \case (Node _ (Row EConf {minWidth = Proportion} _) _) -> True; _ -> False
+-- this is a retarded function
+rowNodeIsProportional = \case
+  (Node _ (Row EConf {minWidth = Fit} _) _) -> True
+  _ -> False
+
+colNodeIsProportional = \case
+  (Node _ (Col EConf {minHeight = Fit} _) _) -> True
+  _ -> False
 
 calcHorizontalVariableSizes :: Element SizeMD -> Int -> Element SizeMD
-calcHorizontalVariableSizes (Node SizeMD {size = (rowSize, colSize)} ty@(Row EConf {minWidth, minHeight} _) es) freeWidth =
-  let (proportionalNodes, fixedNodes) = partition nodeIsProportional es
-   in let newWidth = if (not . null) proportionalNodes then freeWidth else max (measureSizeOr colSize minWidth) colSize
+calcHorizontalVariableSizes (Node SizeMD {size = (h, w)} ty@(Row EConf {minWidth, minHeight} _) es) freeWidth =
+  let (proportionalNodes, fixedNodes) = partition rowNodeIsProportional es
+   in let newWidth = if (not . null) proportionalNodes || (not . measureIsPrecise) minWidth then freeWidth else max (measureSizeOr w minWidth) w
           remainingVariableWidth =
             foldl
-              ( \acc SizeMD {size = (_, colSize)} ->
-                  max 0 (acc - colSize)
+              ( \acc SizeMD {size = (_, w)} ->
+                  max 0 (acc - w)
               )
               newWidth
               (map elementMD fixedNodes)
-          temp (Node SizeMD {size = (rowSize, colSize)} ty@(Row EConf {minWidth = Proportion} _) es) =
-            calcHorizontalVariableSizes (Node SizeMD {size = (rowSize, remainingVariableWidth)} ty es) remainingVariableWidth
+          temp (Node SizeMD {size = (h, _)} ty@(Row EConf {minWidth = Fit} _) es) =
+            calcHorizontalVariableSizes (Node SizeMD {size = (h, remainingVariableWidth)} ty es) remainingVariableWidth
           temp x =
             calcHorizontalVariableSizes x remainingVariableWidth
-       in Node SizeMD {size = (max rowSize (measureSizeOr 1 minHeight), max newWidth (measureSizeOr 0 minWidth))} ty (map temp es)
-calcHorizontalVariableSizes (Node SizeMD {size = (r, c)} col@(Col EConf {minWidth, minHeight} _) es) width =
-  Node SizeMD {size = (max r (measureSizeOr 1 minHeight), max c (max width (measureSizeOr width minWidth)))} col $
-    map (`calcHorizontalVariableSizes` width) es
+       in Node
+            SizeMD
+              { size =
+                  ( max h (measureSizeOr 1 minHeight),
+                    max newWidth (measureSizeOr 0 minWidth)
+                  )
+              }
+            ty
+            (map temp es)
+calcHorizontalVariableSizes (Node SizeMD {size = (h, w)} col@(Col EConf {minWidth, minHeight} _) es) freeWidth =
+  -- maybe this min height should should be done in the first sizing step too hmmm?
+  Node
+    SizeMD
+      { size =
+          ( max h (measureSizeOr 0 minHeight),
+            max w (max freeWidth (measureSizeOr 0 minWidth))
+          )
+      }
+    col
+    $ map (`calcHorizontalVariableSizes` freeWidth) es
 calcHorizontalVariableSizes leaf@(Leaf _ _) _ = leaf
+
+calcVerticalVariableSizes (Node SizeMD {size = (h, w)} ty@(Col EConf {minWidth, minHeight} _) es) freeHeight =
+  let (proportionalNodes, fixedNodes) = partition colNodeIsProportional es
+   in let newHeight = if (not . null) proportionalNodes || (not . measureIsPrecise) minHeight then freeHeight else max (measureSizeOr h minHeight) h
+          remainingVariableHeight =
+            foldl
+              ( \acc SizeMD {size = (h, _)} ->
+                  max 0 (acc - h)
+              )
+              newHeight
+              (map elementMD fixedNodes)
+          temp (Node SizeMD {size = (_, w)} ty@(Col EConf {minHeight = Fit} _) es) =
+            calcVerticalVariableSizes (Node SizeMD {size = (remainingVariableHeight, w)} ty es) remainingVariableHeight
+          temp x = calcVerticalVariableSizes x remainingVariableHeight
+       in Node
+            SizeMD
+              { size =
+                  ( max newHeight (measureSizeOr 0 minHeight),
+                    max w (measureSizeOr 0 minWidth)
+                  )
+              }
+            ty
+            (map temp es)
+calcVerticalVariableSizes (Node SizeMD {size = (h, w)} row@(Row EConf {minWidth, minHeight} _) es) freeHeight =
+  Node
+    SizeMD
+      { size =
+          ( max h (max 0 (measureSizeOr freeHeight minHeight)),
+            max w (measureSizeOr 0 minWidth)
+          )
+      }
+    row
+    $ map (`calcVerticalVariableSizes` freeHeight) es
+calcVerticalVariableSizes leaf@(Leaf _ _) _ = leaf
 
 getTerminalSize =
   ( \case
@@ -240,9 +299,39 @@ getTerminalSize =
     -- Maybe use a function that doesn't throw here? or handle the throw I guess
     <$> mapM (flip (readProcess "tput") "") [["lines"], ["cols"]]
 
+myPara =
+  col
+    [ row [text "╭", hSizable '─', text "╮"],
+      row
+        [ vSizable '│',
+          col
+            [ text "This is the first column",
+              text "Hello"
+            ],
+          vSizable '│',
+          col
+            [ text "This is the second column",
+              text "World"
+            ],
+          vSizable '│'
+        ],
+      row [text "╰", hSizable '─', text "╯"]
+    ]
+
+setRootSize :: Element SizeMD -> (Int, Int) -> Element SizeMD
+setRootSize (Node (SizeMD {size = (h, w)}) ty es) (rows, cols) =
+  Node
+    SizeMD
+      { size =
+          ( max h rows,
+            max w cols
+          )
+      }
+    ty
+    es
+setRootSize node _ = node
+
 main = do
-  (rows, cols) <- fromMaybe (error "Could not obtain terminal size. Are you running in a tty?") <$> getTerminalSize
-  let myTree1 = calcFixedSizes myPara
-  let myTree2 = calcHorizontalVariableSizes myTree1 cols
-  let myTree3 = calcPosition myTree2
-  putStrLn $ intercalate "\n" (render myTree3)
+  (rows, cols) <- getTerminalSize >>= (\(r, c) -> return (r, c - 2)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
+  let myTree = calcPosition . (`calcVerticalVariableSizes` 20) . (`calcHorizontalVariableSizes` cols) . (`setRootSize` (20, cols)) . calcFixedSizes $ myPara
+   in putStrLn $ intercalate "\n" (render myTree)
