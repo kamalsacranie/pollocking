@@ -58,6 +58,18 @@ elementFixedWidths =
         Node {md, config} ->
           if isJust config.flexWidth
             then
+              bounded config.widthBound md.size.width
+            else md.size.width
+        Leaf {md} -> md.size.width
+    )
+
+elementFixedWidthsTEMP :: [Element] -> [Word16]
+elementFixedWidthsTEMP =
+  map
+    ( \case
+        Node {md, config} ->
+          if isJust config.flexWidth
+            then
               getLower config.widthBound
             else md.size.width
         Leaf {md} -> md.size.width
@@ -65,6 +77,18 @@ elementFixedWidths =
 
 elementFixedHeights :: [Element] -> [Word16]
 elementFixedHeights =
+  map
+    ( \case
+        Node {md, config} ->
+          if isJust config.flexHeight
+            then
+              bounded config.heightBound md.size.height
+            else md.size.height
+        Leaf {md} -> md.size.height
+    )
+
+elementFixedHeightsTEMP :: [Element] -> [Word16]
+elementFixedHeightsTEMP =
   map
     ( \case
         Node {md, config} ->
@@ -87,66 +111,64 @@ defaultNode v = Node {md = mempty, variant = v, config = mempty, children = []}
 sizeFixedHorizontally :: Element -> Element
 sizeFixedHorizontally node@(Node {variant, children, md, config}) =
   let children' = map sizeFixedHorizontally children
-   in let width =
-            ( case variant of
-                Row {} -> sum
-                Col {} -> foldl max node.md.size.width
-            )
-              . elementFixedWidths
-              $ children'
-       in node {md = md {size = md.size {width = bounded config.widthBound width}}, children = children'}
+      width =
+        ( case variant of
+            Row {} -> sum
+            Col {} -> foldl max node.md.size.width
+        )
+          . elementFixedWidths
+          $ children'
+   in node {md = md {size = md.size {width = bounded config.widthBound width}}, children = children'}
 sizeFixedHorizontally leaf@Leaf {md} =
   leaf {md = md {size = md.size {width = 1}}}
 
 sizeFixedVertically :: Element -> Element
 sizeFixedVertically node@(Node {variant, children, md, config}) =
   let children' = map sizeFixedVertically children
-   in let height =
-            ( case variant of
-                Col {} -> sum
-                Row {} -> foldl max md.size.height
-            )
-              . elementFixedHeights
-              $ children'
-       in node {md = md {size = md.size {height = bounded config.heightBound height}}, children = children'}
+      height =
+        ( case variant of
+            Col {} -> sum
+            Row {} -> foldl max md.size.height
+        )
+          . elementFixedHeights
+          $ children'
+   in node {md = md {size = md.size {height = bounded config.heightBound height}}, children = children'}
 sizeFixedVertically leaf@Leaf {md} =
   leaf {md = md {size = md.size {height = 1}}}
 
 sizeFlexHorizontally :: Word16 -> Element -> Element
 sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
-  let newWidth = case (config.flexWidth, any (\case Node {config} -> isJust config.flexWidth; Leaf {} -> False) children) of
-        (Just x, _) -> fromIntegral (ceiling (fromIntegral parentFreeWidth * x)) -- need to figure out how to normalize the floats somewhere
-        (Nothing, True) -> parentFreeWidth
-        (Nothing, False) -> md.size.width
-   in let nodeFreeWidth =
-            newWidth
-              - ( case variant of
-                    Col {} -> 0
-                    Row {} -> sum (elementFixedWidths children)
-                )
-       in -- TODO: Overflow checking
-          node
-            { md = md {size = md.size {width = newWidth}},
-              children = map (\c -> sizeFlexHorizontally (nodeFreeWidth + 0) c) children
-            }
+  let newWidth = case config.flexWidth of
+        Just x -> max md.size.width $ fromIntegral (floor (fromIntegral parentFreeWidth * x)) -- need to figure out how to normalize the floats somewhere
+        Nothing -> md.size.width
+      nodeFreeWidth =
+        newWidth
+          - ( case variant of
+                Col {} -> 0
+                Row {} -> sum (elementFixedWidthsTEMP children)
+            )
+   in -- TODO: Overflow checking
+      node
+        { md = md {size = md.size {width = newWidth}}, -- TODO: this should be bounded
+          children = map (sizeFlexHorizontally nodeFreeWidth) children
+        }
 sizeFlexHorizontally _ leaf@(Leaf {}) = leaf
 
 sizeFlexVertically :: Word16 -> Element -> Element
 sizeFlexVertically parentFreeHeight node@(Node {..}) =
-  let newHeight = case (config.flexHeight, any (\case Node {config} -> isJust config.flexHeight; Leaf {} -> False) children) of
-        (Just x, _) -> fromIntegral (ceiling (fromIntegral parentFreeHeight * x)) -- need to figure out how to normalize the floats somewhere
-        (Nothing, True) -> parentFreeHeight
-        (Nothing, False) -> md.size.height
-   in let nodeFreeHeight =
-            newHeight
-              - ( case variant of
-                    Col {} -> sum (elementFixedHeights children)
-                    Row {} -> 0
-                )
-       in node
-            { md = md {size = md.size {height = newHeight}},
-              children = map (\c -> sizeFlexVertically (nodeFreeHeight + c.md.size.height) c) children
-            }
+  let newHeight = case config.flexHeight of
+        Just x -> fromIntegral (floor (fromIntegral parentFreeHeight * x)) -- need to figure out how to normalize the floats somewhere
+        Nothing -> md.size.height
+      nodeFreeHeight =
+        newHeight
+          - ( case variant of
+                Col {} -> sum (elementFixedHeightsTEMP children)
+                Row {} -> 0
+            )
+   in node
+        { md = md {size = md.size {height = newHeight}},
+          children = map (sizeFlexVertically nodeFreeHeight) children
+        }
 sizeFlexVertically _ leaf@(Leaf {}) = leaf
 
 positionElements :: Element -> Element
@@ -182,14 +204,14 @@ createCanvas c s = replicate (fromIntegral s.height) (replicate (fromIntegral s.
 splice :: Int -> [Char] -> [Char] -> [Char]
 splice start original replacement =
   let (pre, rest) = splitAt start original
-   in let (original', rest') = splitAt (length replacement) rest
-       in pre ++ zipWith (\o r -> if r == ' ' then o else r) original' replacement ++ rest'
+      (original', rest') = splitAt (length replacement) rest
+   in pre ++ zipWith (\o r -> if r == ' ' then o else r) original' replacement ++ rest'
 
 drawOnCanvas :: [[Char]] -> [[Char]] -> Position -> [[Char]]
 drawOnCanvas baseCanvas canvas pos =
   let (pre, rest) = splitAt pos.y baseCanvas
-   in let (rows, rest') = splitAt (length canvas) rest
-       in pre ++ zipWith (splice pos.x) rows canvas ++ rest'
+      (rows, rest') = splitAt (length canvas) rest
+   in pre ++ zipWith (splice pos.x) rows canvas ++ rest'
 
 render :: Element -> [[Char]]
 render Node {md, children, config} =
