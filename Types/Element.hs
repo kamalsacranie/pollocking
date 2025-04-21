@@ -127,7 +127,7 @@ sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
        in -- TODO: Overflow checking
           node
             { md = md {size = md.size {width = newWidth}},
-              children = map (sizeFlexHorizontally nodeFreeWidth) children
+              children = map (\c -> sizeFlexHorizontally (nodeFreeWidth + 0) c) children
             }
 sizeFlexHorizontally _ leaf@(Leaf {}) = leaf
 
@@ -145,7 +145,7 @@ sizeFlexVertically parentFreeHeight node@(Node {..}) =
                 )
        in node
             { md = md {size = md.size {height = newHeight}},
-              children = map (sizeFlexVertically nodeFreeHeight) children
+              children = map (\c -> sizeFlexVertically (nodeFreeHeight + c.md.size.height) c) children
             }
 sizeFlexVertically _ leaf@(Leaf {}) = leaf
 
