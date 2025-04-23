@@ -12,11 +12,13 @@ module Types.Element
     sizeFlexHorizontally,
     sizeFlexVertically,
     render,
+    normaliseFlexorFloats,
   )
 where
 
 import Control.Applicative ((<|>))
 import Data.Bifunctor (Bifunctor (second))
+import Data.List (mapAccumL, mapAccumR)
 import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Word (Word16)
 import GHC.Float (int2Float)
@@ -52,9 +54,6 @@ data Element
         c :: Char
       }
   deriving (Show, Eq)
-
-elementWidths :: [Element] -> [Word16]
-elementWidths = map (\x -> x.md.size.width)
 
 elementFixedWidths :: [Element] -> [Word16]
 elementFixedWidths =
@@ -104,15 +103,91 @@ elementFixedMinimumHeights =
         Leaf {md} -> md.size.height
     )
 
-elementHeights :: [Element] -> [Word16]
-elementHeights = map (\x -> x.md.size.height)
-
 defaultNode :: Variant -> Element
 defaultNode v = Node {md = mempty, variant = v, config = mempty, children = []}
 
--- We need to go back and think about how we can make this work at any stage of our process
--- Right now it doesn't check if nodes are flexible. I feel like we can make
--- this stage independent if we use the minW/H for this flex thing
+-- Potentially a case for template haskell??
+isRow = Variant.isRow . variant
+
+isCol = Variant.isCol . variant
+
+isNode Node {} = True
+isNode Leaf {} = False
+
+getMetadata Node {md} = md
+getMetadata Leaf {md} = md
+
+setMetadata x@(Node {md}) f = x {md = f md}
+setMetadata x@(Leaf {md}) f = x {md = f md}
+
+horizontalFlexFloats Node {children} = filter isNode children >>= (maybeToList . flexWidth . config)
+horizontalFlexFloats Leaf {} = []
+
+verticalFlexFloats Node {children} = filter isNode children >>= (maybeToList . flexHeight . config)
+verticalFlexFloats Leaf {} = []
+
+primaryAxisFlexFloats node@(Node {children, variant = Row {}}) = horizontalFlexFloats node
+primaryAxisFlexFloats node@(Node {children, variant = Col {}}) = verticalFlexFloats node
+primaryAxisFlexFloats Leaf {} = []
+
+sumPrimaryAxisFLexFloats = sum . primaryAxisFlexFloats
+
+calculateElementSlop :: Element -> Word16 -> Word16
+calculateElementSlop node@(Node {}) availableSize =
+  if sumPrimaryAxisFLexFloats node == 1.0
+    then
+      availableSize
+        - sum
+          ( map
+              (floor . ((int2Float . fromIntegral) availableSize *))
+              (primaryAxisFlexFloats node)
+          )
+    else
+      0
+calculateElementSlop Leaf {} _ = 0
+
+updateLastFlexibleChild fx =
+  snd
+    . foldr
+      ( \x (done, res) -> case (done, x) of
+          (False, x@(Node {config = NC {flexWidth = Just f}, ..})) -> (True, fx x : res)
+          _ -> (done, x : res)
+      )
+      (False, [])
+
+normaliseFloatList = undefined
+
+normaliseFlexorFloats :: Element -> Element
+normaliseFlexorFloats node@(Node {variant = Row {}, ..}) =
+  let horizontalFlexorSum = sum $ horizontalFlexFloats node
+      transform = if horizontalFlexorSum > 1 then (/ horizontalFlexorSum) else id
+   in node
+        { children =
+            map
+              ( normaliseFlexorFloats
+                  . ( \case
+                        node@Node {..} -> node {config = config {flexWidth = transform <$> config.flexWidth, flexHeight = max 1 <$> config.flexHeight}}
+                        x -> x
+                    )
+              )
+              children
+        }
+normaliseFlexorFloats node@(Node {variant = Col {}, ..}) =
+  let verticalFlexorSum = sum $ verticalFlexFloats node
+      transform = if verticalFlexorSum > 1 then (/ verticalFlexorSum) else id
+   in node
+        { children =
+            map
+              ( normaliseFlexorFloats
+                  . ( \case
+                        node@Node {..} -> node {config = config {flexWidth = max 1 <$> config.flexWidth, flexHeight = transform <$> config.flexHeight}}
+                        x -> x
+                    )
+              )
+              children
+        }
+normaliseFlexorFloats leaf@(Leaf {}) = leaf
+
 sizeFixedHorizontally :: Element -> Element
 sizeFixedHorizontally node@(Node {variant, children, md, config}) =
   let children' = map sizeFixedHorizontally children
@@ -141,35 +216,6 @@ sizeFixedVertically node@(Node {variant, children, md, config}) =
 sizeFixedVertically leaf@Leaf {md} =
   leaf {md = md {size = md.size {height = 1}}}
 
-primaryAxisFlexFloats Node {children, variant = Row {}} = children >>= (maybeToList . flexWidth . config)
-primaryAxisFlexFloats Node {children, variant = Col {}} = children >>= (maybeToList . flexHeight . config)
-primaryAxisFlexFloats Leaf {} = []
-
-sumPrimaryAxisFLexFloats = sum . primaryAxisFlexFloats
-
-calculateElementSlop :: Element -> Word16 -> Word16
-calculateElementSlop node@(Node {}) availableSize =
-  if sumPrimaryAxisFLexFloats node == 1.0
-    then
-      availableSize
-        - sum
-          ( map
-              (floor . ((int2Float . fromIntegral) availableSize *))
-              (primaryAxisFlexFloats node)
-          )
-    else
-      0
-calculateElementSlop Leaf {} _ = 0
-
-updateLastFlexibleChild fx =
-  snd
-    . foldr
-      ( \x (done, res) -> case (done, x) of
-          (False, x@(Node {config = NC {flexWidth = Just f}, ..})) -> (True, fx x : res)
-          _ -> (done, x : res)
-      )
-      (False, [])
-
 sizeFlexHorizontally :: Word16 -> Element -> Element
 sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
   let newWidth = case config.flexWidth of
@@ -186,7 +232,7 @@ sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
         { md = md {size = md.size {width = newWidth}}, -- TODO: should this be bounded???
           children =
             updateLastFlexibleChild
-              (\x@(Node {..}) -> x {md = md {size = md.size {width = md.size.width + slop}}})
+              (\x@(Node {..}) -> x {md = md {size = md.size {width = md.size.width + slop}}}) -- This is a gross API, i know i will be getting a node and not an element but i can't have the type checker know
               (map (sizeFlexHorizontally nodeFreeWidth) children)
         }
 sizeFlexHorizontally _ leaf@(Leaf {}) = leaf
@@ -213,31 +259,24 @@ sizeFlexVertically parentFreeHeight node@(Node {..}) =
 sizeFlexVertically _ leaf@(Leaf {}) = leaf
 
 positionElements :: Element -> Element
-positionElements node@(Node {variant = Row {}, ..}) =
-  let (_, children') = foldl (\(x, result) -> second (: result) . updateMDAndCurrentX x) (0, []) (map positionElements children)
+positionElements node@(Node {..}) =
+  let children' = snd $ mapAccumL updateMDAndCurrentOffset 0 (map positionElements children)
    in node {md = md {position = md.position {x = 0, y = 0}}, children = reverse children'}
   where
-    updateMDAndCurrentX x e =
-      let md = case e of Node {md} -> md; Leaf {md} -> md
-       in ( fromIntegral md.size.width + x,
-            case e of
-              node@(Node {..}) -> node {md = md {position = md.position {x}}}
-              leaf@(Leaf {..}) -> leaf {md = md {position = md.position {x}}}
-          )
-positionElements node@(Node {variant = Col {}, ..}) =
-  let (_, children') = foldl (\(y, result) -> second (: result) . updateMDAndCurrentY y) (0, []) (map positionElements children)
-   in node {md = md {position = md.position {x = 0, y = 0}}, children = reverse children'}
-  where
+    updateMDAndCurrentOffset = case variant of
+      Col {} -> updateMDAndCurrentY
+      Row {} -> updateMDAndCurrentX
     updateMDAndCurrentY y e =
-      let md = case e of Node {md} -> md; Leaf {md} -> md
-       in ( fromIntegral md.size.height + y,
-            case e of
-              node@(Node {..}) -> node {md = md {position = md.position {y}}}
-              leaf@(Leaf {..}) -> leaf {md = md {position = md.position {y}}}
-          )
+      ( fromIntegral (getMetadata e).size.height + y,
+        setMetadata e (\md -> md {position = md.position {y}})
+      )
+    updateMDAndCurrentX x e =
+      ( fromIntegral (getMetadata e).size.width + x,
+        setMetadata e (\md -> md {position = md.position {x}})
+      )
 positionElements leaf@(Leaf {md, c}) = leaf {md = md {position = md.position {x = 0, y = 0}}}
 
---- TODO: CLEANUP
+------------------- TODO: CLEANUP
 
 createCanvas :: Char -> Size -> [String]
 createCanvas c s = replicate (fromIntegral s.height) (replicate (fromIntegral s.width) c)

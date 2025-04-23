@@ -12,6 +12,7 @@ import Text.Read (readMaybe)
 import Types.Config (Config (fill, flexHeight, flexWidth))
 import Types.Element
   ( Element (Leaf, Node, c, children, config, md),
+    normaliseFlexorFloats,
     positionElements,
     render,
     sizeFixedHorizontally,
@@ -22,11 +23,13 @@ import Types.Element
 import Types.Metadata (size)
 import Types.Size (Size (height, width))
 
+fillSize f = fillVertical f . fillHorizontal f
+
 border :: Element -> Element
 border e =
   col
     [ (fillHorizontal 1 . row) [text "╭", horizontalRule 0.5, text "444", horizontalRule 0.5, text "╮"],
-      (fillVertical 1 . fillHorizontal 1 . row) [verticalRule 1, fillVertical 1 . fillHorizontal 1 $ e, verticalRule 1],
+      (fillSize 1 . row) [verticalRule 1, fillSize 1 e, verticalRule 1],
       (fillHorizontal 1 . row) [text "╰", horizontalRule 1, text "╯"]
     ]
 
@@ -87,6 +90,7 @@ main = do
             . (\case node@(Node {md}) -> node {md = md {size = md.size {width = fromIntegral screenWidth, height = 20}}})
             . sizeFixedVertically
             . sizeFixedHorizontally
+            . normaliseFlexorFloats
         )
           tree0
    in (putStrLn . intercalate "\n" . render $ tree)
