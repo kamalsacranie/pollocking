@@ -25,7 +25,7 @@ import Types.Size (Size (height, width))
 border :: Element -> Element
 border e =
   col
-    [ (fillHorizontal 1 . row) [text "╭", horizontalRule 1, text "╮"],
+    [ (fillHorizontal 1 . row) [text "╭", horizontalRule 0.5, text "444", horizontalRule 0.5, text "╮"],
       (fillVertical 1 . fillHorizontal 1 . row) [verticalRule 1, fillVertical 1 . fillHorizontal 1 $ e, verticalRule 1],
       (fillHorizontal 1 . row) [text "╰", horizontalRule 1, text "╯"]
     ]

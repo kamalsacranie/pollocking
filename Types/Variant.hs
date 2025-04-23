@@ -1,4 +1,4 @@
-module Types.Variant (Variant(Row, Col), defaultRowVariant, defaultColVariant) where
+module Types.Variant (Variant (Row, Col), defaultRowVariant, defaultColVariant, isRow, isCol) where
 
 import Types.ColConfig (ColConfig)
 import Types.RowConfig (RowConfig)
@@ -12,4 +12,11 @@ instance Semigroup Variant where
   _ <> _ = error "Cannot combine different variants"
 
 defaultRowVariant = Row mempty
+
 defaultColVariant = Col mempty
+
+isRow Row {} = True
+isRow _ = False
+
+isCol Col {} = True
+isCol _ = False

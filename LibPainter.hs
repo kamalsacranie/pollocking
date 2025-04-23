@@ -9,8 +9,11 @@ import Types.Metadata (Metadata)
 import Types.RowConfig (RowConfig)
 import Types.Variant (Variant (Col, Row), defaultColVariant, defaultRowVariant)
 
+nodeWith :: Config -> Variant -> [Element] -> Element
+nodeWith gc v children = (defaultNode v) {config = gc, children}
+
 rowWith :: Config -> RowConfig -> [Element] -> Element
-rowWith gc rc children = (defaultNode (Row rc)) {config = gc, children}
+rowWith gc = nodeWith gc . Row
 
 defaultRowWith :: Config -> [Element] -> Element
 defaultRowWith gc = rowWith gc mempty
@@ -19,7 +22,7 @@ row :: [Element] -> Element
 row = defaultRowWith mempty
 
 colWith :: Config -> ColConfig -> [Element] -> Element
-colWith gc cc children = (defaultNode (Col cc)) {config = gc, children}
+colWith gc = nodeWith gc . Col
 
 defaultColWith :: Config -> [Element] -> Element
 defaultColWith gc = colWith gc mempty

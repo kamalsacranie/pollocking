@@ -2,7 +2,7 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Types.Config
-  ( Config (fill, flexWidth, flexHeight, heightBound, widthBound),
+  ( Config (NC, fill, flexWidth, flexHeight, heightBound, widthBound),
     upper,
     getUpper,
     lower,

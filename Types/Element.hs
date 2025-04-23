@@ -15,12 +15,16 @@ module Types.Element
   )
 where
 
+import Control.Applicative ((<|>))
 import Data.Bifunctor (Bifunctor (second))
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Word (Word16)
+import GHC.Float (int2Float)
+import GHC.IO.Unsafe (unsafePerformIO)
 import Types.Config
   ( Config
-      ( fill,
+      ( NC,
+        fill,
         flexHeight,
         flexWidth,
         heightBound,
@@ -34,6 +38,7 @@ import Types.Metadata (Metadata (MD, position, size))
 import Types.Position (Position (x, y))
 import Types.Size (Size (S, height, width))
 import Types.Variant (Variant (Col, Row))
+import Types.Variant qualified as Variant
 
 data Element
   = Node
@@ -63,8 +68,8 @@ elementFixedWidths =
         Leaf {md} -> md.size.width
     )
 
-elementFixedWidthsTEMP :: [Element] -> [Word16]
-elementFixedWidthsTEMP =
+elementFixedMinimumWidths :: [Element] -> [Word16]
+elementFixedMinimumWidths =
   map
     ( \case
         Node {md, config} ->
@@ -87,8 +92,8 @@ elementFixedHeights =
         Leaf {md} -> md.size.height
     )
 
-elementFixedHeightsTEMP :: [Element] -> [Word16]
-elementFixedHeightsTEMP =
+elementFixedMinimumHeights :: [Element] -> [Word16]
+elementFixedMinimumHeights =
   map
     ( \case
         Node {md, config} ->
@@ -136,6 +141,35 @@ sizeFixedVertically node@(Node {variant, children, md, config}) =
 sizeFixedVertically leaf@Leaf {md} =
   leaf {md = md {size = md.size {height = 1}}}
 
+primaryAxisFlexFloats Node {children, variant = Row {}} = children >>= (maybeToList . flexWidth . config)
+primaryAxisFlexFloats Node {children, variant = Col {}} = children >>= (maybeToList . flexHeight . config)
+primaryAxisFlexFloats Leaf {} = []
+
+sumPrimaryAxisFLexFloats = sum . primaryAxisFlexFloats
+
+calculateElementSlop :: Element -> Word16 -> Word16
+calculateElementSlop node@(Node {}) availableSize =
+  if sumPrimaryAxisFLexFloats node == 1.0
+    then
+      availableSize
+        - sum
+          ( map
+              (floor . ((int2Float . fromIntegral) availableSize *))
+              (primaryAxisFlexFloats node)
+          )
+    else
+      0
+calculateElementSlop Leaf {} _ = 0
+
+updateLastFlexibleChild fx =
+  snd
+    . foldr
+      ( \x (done, res) -> case (done, x) of
+          (False, x@(Node {config = NC {flexWidth = Just f}, ..})) -> (True, fx x : res)
+          _ -> (done, x : res)
+      )
+      (False, [])
+
 sizeFlexHorizontally :: Word16 -> Element -> Element
 sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
   let newWidth = case config.flexWidth of
@@ -145,12 +179,15 @@ sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
         newWidth
           - ( case variant of
                 Col {} -> 0
-                Row {} -> sum (elementFixedWidthsTEMP children)
+                Row {} -> sum (elementFixedMinimumWidths children)
             )
-   in -- TODO: Overflow checking
-      node
-        { md = md {size = md.size {width = newWidth}}, -- TODO: this should be bounded
-          children = map (sizeFlexHorizontally nodeFreeWidth) children
+      slop = calculateElementSlop node nodeFreeWidth
+   in node
+        { md = md {size = md.size {width = newWidth}}, -- TODO: should this be bounded???
+          children =
+            updateLastFlexibleChild
+              (\x@(Node {..}) -> x {md = md {size = md.size {width = md.size.width + slop}}})
+              (map (sizeFlexHorizontally nodeFreeWidth) children)
         }
 sizeFlexHorizontally _ leaf@(Leaf {}) = leaf
 
@@ -162,12 +199,16 @@ sizeFlexVertically parentFreeHeight node@(Node {..}) =
       nodeFreeHeight =
         newHeight
           - ( case variant of
-                Col {} -> sum (elementFixedHeightsTEMP children)
+                Col {} -> sum (elementFixedMinimumHeights children)
                 Row {} -> 0
             )
+      slop = calculateElementSlop node nodeFreeHeight
    in node
         { md = md {size = md.size {height = newHeight}},
-          children = map (sizeFlexVertically nodeFreeHeight) children
+          children =
+            updateLastFlexibleChild
+              (\x@(Node {..}) -> x {md = md {size = md.size {height = md.size.height + slop}}})
+              (map (sizeFlexVertically nodeFreeHeight) children)
         }
 sizeFlexVertically _ leaf@(Leaf {}) = leaf
 
