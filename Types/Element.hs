@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Types.Element
-  ( Element (Node, md, variant, config, children, Leaf, c),
+  ( Element (Node, md, variant, config, children, Leaf, s),
     defaultNode,
     sizeFixedHorizontally,
     sizeFixedVertically,
@@ -12,14 +12,20 @@ module Types.Element
     sizeFlexHorizontally,
     sizeFlexVertically,
     render,
+    getMetadata,
+    setMetadata,
     normaliseFlexorFloats,
+    CanvasSequece (In, Out),
   )
 where
 
 import Control.Applicative ((<|>))
 import Data.Bifunctor (Bifunctor (second))
-import Data.List (mapAccumL, mapAccumR)
+import Data.List (intercalate, mapAccumL, mapAccumR)
+import Data.List qualified as List.Data
 import Data.Maybe (fromMaybe, isJust, maybeToList)
+import Data.Set (Set)
+import Data.Text (replace)
 import Data.Word (Word16)
 import GHC.Float (int2Float)
 import GHC.IO.Unsafe (unsafePerformIO)
@@ -36,9 +42,10 @@ import Types.Config
     getLower,
     getUpper,
   )
-import Types.Metadata (Metadata (MD, position, size))
+import Types.Metadata (Metadata (MD, position, size, style))
 import Types.Position (Position (x, y))
 import Types.Size (Size (S, height, width))
+import Types.Style (Style (ST, bgColor, fillCharColor, textColor, textStyles), TextStyle (Bold, Italic, Underline), color)
 import Types.Variant (Variant (Col, Row))
 import Types.Variant qualified as Variant
 
@@ -51,7 +58,7 @@ data Element
       }
   | Leaf
       { md :: Metadata,
-        c :: Char
+        s :: [Char]
       }
   deriving (Show, Eq)
 
@@ -199,8 +206,8 @@ sizeFixedHorizontally node@(Node {variant, children, md, config}) =
           . elementFixedWidths
           $ children'
    in node {md = md {size = md.size {width = bounded config.widthBound width}}, children = children'}
-sizeFixedHorizontally leaf@Leaf {md} =
-  leaf {md = md {size = md.size {width = 1}}}
+sizeFixedHorizontally leaf@Leaf {md, s} =
+  leaf {md = md {size = md.size {width = fromIntegral $ length s}}}
 
 sizeFixedVertically :: Element -> Element
 sizeFixedVertically node@(Node {variant, children, md, config}) =
@@ -214,7 +221,7 @@ sizeFixedVertically node@(Node {variant, children, md, config}) =
           $ children'
    in node {md = md {size = md.size {height = bounded config.heightBound height}}, children = children'}
 sizeFixedVertically leaf@Leaf {md} =
-  leaf {md = md {size = md.size {height = 1}}}
+  leaf {md = md {size = md.size {height = 1}}} -- TODO: Height is number of new lines + 1
 
 sizeFlexHorizontally :: Word16 -> Element -> Element
 sizeFlexHorizontally parentFreeWidth node@(Node {..}) =
@@ -261,7 +268,7 @@ sizeFlexVertically _ leaf@(Leaf {}) = leaf
 positionElements :: Element -> Element
 positionElements node@(Node {..}) =
   let children' = snd $ mapAccumL updateMDAndCurrentOffset 0 (map positionElements children)
-   in node {md = md {position = md.position {x = 0, y = 0}}, children = reverse children'}
+   in node {md = md {position = md.position {x = 0, y = 0}}, children = children'}
   where
     updateMDAndCurrentOffset = case variant of
       Col {} -> updateMDAndCurrentY
@@ -274,30 +281,77 @@ positionElements node@(Node {..}) =
       ( fromIntegral (getMetadata e).size.width + x,
         setMetadata e (\md -> md {position = md.position {x}})
       )
-positionElements leaf@(Leaf {md, c}) = leaf {md = md {position = md.position {x = 0, y = 0}}}
+positionElements leaf@(Leaf {md, s}) = leaf {md = md {position = md.position {x = 0, y = 0}}}
 
 ------------------- TODO: CLEANUP
+type Canvas = [[CanvasSequece]]
 
-createCanvas :: Char -> Size -> [String]
-createCanvas c s = replicate (fromIntegral s.height) (replicate (fromIntegral s.width) c)
+data CanvasSequece = In [Char] | Out [Char]
+  deriving (Show, Eq)
 
-splice :: Int -> [Char] -> [Char] -> [Char]
+createCanvas :: Char -> Size -> Canvas
+createCanvas s size = replicate (fromIntegral size.height) [In $ replicate (fromIntegral size.width) s]
+
+splice :: Int -> [CanvasSequece] -> [CanvasSequece] -> [CanvasSequece]
 splice start original replacement =
-  let (pre, rest) = splitAt start original
-      (original', rest') = splitAt (length replacement) rest
-   in pre ++ zipWith (\o r -> if r == ' ' then o else r) original' replacement ++ rest'
+  let (_, _, result) =
+        foldl
+          ( \(tempPointer, done, result) cs -> case (cs, done) of
+              (_, True) -> (tempPointer, True, result ++ [cs])
+              (In chars, False) ->
+                let tempOffset = tempPointer + length chars
+                 in if tempOffset > start
+                      then
+                        let start' = start - tempPointer
+                            (pre, rest) = splitAt start' chars
+                            (original', rest') = splitAt (length $ replacement >>= \case In chars -> chars; _ -> []) rest
+                         in (tempOffset, True, result ++ [In pre] ++ replacement ++ [In rest']) -- TODO: Figure out bgFill transparency
+                      else (tempOffset, False, result ++ [cs])
+              (Out chars, False) -> (tempPointer, False, result ++ [cs]) -- TODO: Use a better fold direction
+          )
+          (0, False, [])
+          original
+   in result
 
-drawOnCanvas :: [[Char]] -> [[Char]] -> Position -> [[Char]]
+drawOnCanvas :: Canvas -> Canvas -> Position -> Canvas
 drawOnCanvas baseCanvas canvas pos =
   let (pre, rest) = splitAt pos.y baseCanvas
       (rows, rest') = splitAt (length canvas) rest
    in pre ++ zipWith (splice pos.x) rows canvas ++ rest'
 
-render :: Element -> [[Char]]
+temp :: Set TextStyle -> Style -> ([Char] -> [CanvasSequece])
+temp textStyles ST {textColor, fillCharColor, bgColor} =
+  let applyBgColor =
+        ( \(r, g, b) s ->
+            Out ("\x1b[48;2;" ++ (intercalate ";" . map show) [r, g, b] ++ "m") : s ++ [Out "\x1b[49m"]
+        )
+          . color
+          <$> bgColor
+      applyTextColor =
+        ( \(r, g, b) s ->
+            Out ("\x1b[38;2;" ++ (intercalate ";" . map show) [r, g, b] ++ "m") : s ++ [Out "\x1b[39m"]
+        )
+          . color
+          <$> textColor
+      applyTextStyles =
+        foldr
+          ( \x ->
+              (.) $ case x of
+                Bold -> (\s -> Out "\x1b[1m" : s ++ [Out "\x1b[22m"])
+                Italic -> (\s -> Out "\x1b[3m" : s ++ [Out "\x1b[23m"])
+                Underline -> (\s -> Out "\x1b[4m" : s ++ [Out "\x1b[24m"])
+          )
+          id
+          textStyles
+   in applyTextStyles . foldr ((.) . fromMaybe id) id [applyTextColor, applyBgColor] . (: []) . In
+
+render :: Element -> Canvas
 render Node {md, children, config} =
-  let renderedChildrenAndMD = zip (map (\case Node {md} -> md; Leaf {md} -> md) children) (map render children)
+  let renderedChildrenAndMD = zip (map getMetadata children) (map render children)
    in foldl
         (\acc (md, child) -> drawOnCanvas acc child md.position)
         (createCanvas config.fill md.size)
         renderedChildrenAndMD
-render (Leaf _ c) = [[c]]
+-- TODO: Figure out how to make it explicit that leaves are always 1. Right now
+-- it is implicit...
+render (Leaf md s) = [temp md.style.textStyles md.style s]

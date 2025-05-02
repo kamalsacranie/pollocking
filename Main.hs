@@ -6,12 +6,15 @@ module Main where
 
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe, mapMaybe)
-import LibPainter (col, horizontalRule, horizontalSpacer, row, text, verticalRule, verticalSpacer)
+import GHC.IO.Handle (hFlush)
+import LibPainter (bgColor, col, horizontalRule, horizontalSpacer, row, text, textBold, textColor, textItalic, textUnderline, verticalRule, verticalSpacer)
+import System.IO (stdout)
 import System.Process (readProcess)
 import Text.Read (readMaybe)
 import Types.Config (Config (fill, flexHeight, flexWidth))
 import Types.Element
-  ( Element (Leaf, Node, c, children, config, md),
+  ( CanvasSequece (In, Out),
+    Element (Leaf, Node, children, config, md, s),
     normaliseFlexorFloats,
     positionElements,
     render,
@@ -22,13 +25,16 @@ import Types.Element
   )
 import Types.Metadata (size)
 import Types.Size (Size (height, width))
+import Types.Style (Color (..))
+
+-- TODO: Flatten metadata to just be flat keys?
 
 fillSize f = fillVertical f . fillHorizontal f
 
 border :: Element -> Element
 border e =
   col
-    [ (fillHorizontal 1 . row) [text "╭", horizontalRule 0.5, text "444", horizontalRule 0.5, text "╮"],
+    [ (fillHorizontal 1 . row) [text "╭", horizontalRule 1, text "╮"],
       (fillSize 1 . row) [verticalRule 1, fillSize 1 e, verticalRule 1],
       (fillHorizontal 1 . row) [text "╰", horizontalRule 1, text "╯"]
     ]
@@ -39,14 +45,14 @@ fillVertical f node@(Node {config}) = node {config = config {flexHeight = Just f
 
 fillBackground :: Char -> Element -> Element
 fillBackground x node@(Node {..}) = node {config = config {fill = x}}
-fillBackground x leaf@(Leaf {}) = leaf {c = x}
+fillBackground x leaf@(Leaf {}) = leaf {s = [x]}
 
 t =
   border $
-    row
+    (textColor White . row)
       [ (fillVertical 1 . col)
           [ verticalSpacer 0.5,
-            text "This is the first column",
+            (bgColor Red . textBold . textItalic . text) "This is the first column",
             fillHorizontal 1 . padCenter $ text "World",
             verticalSpacer 0.5
           ],
@@ -54,7 +60,7 @@ t =
         verticalRule 1,
         horizontalSpacer 0.5,
         col
-          [ text "This is the second column",
+          [ (textUnderline . textBold . bgColor White . textColor Black . text) "This is the second column",
             (fillHorizontal 1 . row) [horizontalSpacer 1, text "World"]
           ]
       ]
@@ -82,19 +88,32 @@ getTerminalSize =
 
 main :: IO ()
 main = do
+  -- putStr "\ESC[?1049h\ESC[H" -- enter fullscreen terminal mode (TODO: Escape code to exit this)
   (screenHeight, screenWidth) <- getTerminalSize >>= (\(lines, cols) -> return (lines, cols)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
   let tree =
         ( positionElements
             . (\tree -> sizeFlexVertically (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.height) tree)
             . (\tree -> sizeFlexHorizontally (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.width) tree)
-            . (\case node@(Node {md}) -> node {md = md {size = md.size {width = fromIntegral screenWidth, height = 20}}})
+            . (\case node@(Node {md}) -> node {md = md {size = md.size {width = fromIntegral screenWidth, height = fromIntegral screenHeight - 1}}})
             . sizeFixedVertically
             . sizeFixedHorizontally
             . normaliseFlexorFloats
         )
           tree0
-   in (putStrLn . intercalate "\n" . render $ tree)
+   in putStrLn
+        $ intercalate "\n"
+        $ map
+          ( intercalate ""
+              . map
+                ( \case
+                    Out chars -> chars
+                    In chars -> chars
+                )
+          )
+          . render
+        $ tree
 
--- print $ tree.md
-
--- print $ map (\x -> x.md) $ drop 1 tree.children
+-- putStr "\ESC[H" -- put cursor in top left
+-- putStr "\r\ESC[KNew 1\n" -- Overwrite line 1
+-- putStr "\r\ESC[KNew 2\n" -- Overwrite line 2
+-- putStr "\r\ESC[KNew 3\n" -- Overwrite line 3

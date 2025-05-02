@@ -11,7 +11,6 @@ module Types.Config
   )
 where
 
-import Control.Applicative (Applicative (liftA2))
 import Data.Word (Word16)
 import GHC.Base (Alternative ((<|>)))
 

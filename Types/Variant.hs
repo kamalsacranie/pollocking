@@ -11,12 +11,16 @@ instance Semigroup Variant where
   Col l <> Col r = Col (l <> r)
   _ <> _ = error "Cannot combine different variants"
 
+defaultRowVariant :: Variant
 defaultRowVariant = Row mempty
 
+defaultColVariant :: Variant
 defaultColVariant = Col mempty
 
+isRow :: Variant -> Bool
 isRow Row {} = True
 isRow _ = False
 
+isCol :: Variant -> Bool
 isCol Col {} = True
 isCol _ = False
