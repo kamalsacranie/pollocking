@@ -1,0 +1,29 @@
+cabal-version: 3.14
+
+name: temp
+
+version: 0.0.1
+
+common warnings
+  ghc-options: -Wall -Werror
+
+executable temp
+  import: warnings
+  main-is: Main.hs
+  build-depends:
+    base
+    , process
+    , containers
+    , binary
+  other-modules:
+    LibPainter
+    Types.ColConfig
+    Types.Config
+    Types.Element
+    Types.Metadata
+    Types.Position
+    Types.RowConfig
+    Types.Size
+    Types.Style
+    Types.Variant
+  default-language: GHC2024
