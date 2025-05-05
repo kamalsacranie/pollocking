@@ -4,6 +4,7 @@
 
 module Main where
 
+import Control.Monad.State (runState)
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe, mapMaybe)
 import LibPainter (bgColor, col, horizontalRule, horizontalSpacer, row, text, textBold, textColor, textItalic, textUnderline, verticalRule, verticalSpacer)
@@ -51,11 +52,11 @@ fillBackground x leaf@(Leaf {}) = leaf {s = [x]}
 
 t :: Element
 t =
-  border $
-    (textColor White . row)
+ border $
+    (fillBackground '.' . bgColor White . textColor Black . row)
       [ (fillVertical 1 . col)
           [ verticalSpacer 0.5,
-            (bgColor Red . textBold . textItalic . text) "This is the first column",
+            (textBold . textItalic . text) "This is the first column",
             fillHorizontal 1 . padCenter $ text "World",
             verticalSpacer 0.5
           ],
@@ -63,7 +64,7 @@ t =
         verticalRule 1,
         horizontalSpacer 0.5,
         col
-          [ (textUnderline . textBold . bgColor White . textColor Black . text) "This is the second column",
+          [ (textUnderline . textBold . text) "This is the second column",
             (fillHorizontal 1 . row) [horizontalSpacer 1, text "World"]
           ]
       ]
@@ -115,7 +116,7 @@ main = do
                     In chars -> chars
                 )
           )
-          . render
+          . (\e -> fst $ runState (render e) mempty)
         $ processedTree
 
 -- putStr "\x1b[?1049l" -- exit fullscreen mode

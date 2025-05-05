@@ -18,6 +18,7 @@ module Types.Element
   )
 where
 
+import Control.Monad.State (State, get, modify, put)
 import Data.List (intercalate, mapAccumL, mapAccumR)
 import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Word (Word16)
@@ -287,6 +288,9 @@ data CanvasSequece = In [Char] | Out [Char]
 createCanvas :: Char -> Size -> Canvas
 createCanvas s size = replicate (fromIntegral size.height) [In $ replicate (fromIntegral size.width) s]
 
+-- TODO: Right now our fold is super inneficient but this can be fixed with a
+-- mapAccumR and using cons but, we will have to reverse the pointer
+-- calculation
 splice :: Int -> Word16 -> [CanvasSequece] -> [CanvasSequece] -> [CanvasSequece]
 splice start size original replacement =
   snd $
@@ -338,12 +342,15 @@ styleToFormatter ST {textColor, bgColor, textStyles} =
           textStyles
    in applyTextStyles . foldr ((.) . fromMaybe id) id [applyTextColor, applyBgColor] . (: []) . In
 
-render :: Element -> Canvas
-render Node {md, children, config} =
-  foldl
-    (\acc child -> drawOnCanvas acc (render child) (getMetadata child))
-    (createCanvas config.fill md.size)
-    children
+render :: Element -> State Style Canvas
+render Node {md, children, config} = get >>= \initialState ->
+    modify (<> md.style)
+    *> foldl
+      (\acc child -> drawOnCanvas <$> acc <*> render child <*> (return $ getMetadata child))
+      (return $ createCanvas config.fill md.size)
+      children
+    <* put initialState
+  
 -- TODO: Figure out how to make it explicit that leaves are always 1. Right now
 -- it is implicit...
-render (Leaf md s) = [styleToFormatter md.style s]
+render (Leaf md s) = (: []) . (flip styleToFormatter) s . (<> md.style) <$> get

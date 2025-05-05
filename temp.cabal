@@ -15,6 +15,7 @@ executable temp
     , process
     , containers
     , binary
+    , mtl
   other-modules:
     LibPainter
     Types.ColConfig

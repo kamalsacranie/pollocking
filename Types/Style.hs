@@ -4,6 +4,7 @@ module Types.Style (Style (ST, bgColor, fillCharColor, textColor, textStyles), C
 
 import Data.Binary (Word8)
 import Data.Set (Set)
+import Control.Applicative ((<|>))
 
 data Style = ST
   { bgColor :: Maybe Color,
@@ -17,9 +18,9 @@ data Style = ST
 instance Semigroup Style where
   l <> r =
     ST
-      { bgColor = l.bgColor <> r.bgColor,
-        fillCharColor = l.fillCharColor <> r.fillCharColor,
-        textColor = l.textColor <> r.textColor,
+      { bgColor = r.bgColor <|> l.bgColor,
+        fillCharColor = r.fillCharColor <|> l.fillCharColor,
+        textColor = r.textColor <|> l.textColor,
         textStyles = l.textStyles <> r.textStyles,
         fillCharStyles = l.fillCharStyles <> r.fillCharStyles
       }
