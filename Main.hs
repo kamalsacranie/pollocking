@@ -6,9 +6,7 @@ module Main where
 
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe, mapMaybe)
-import GHC.IO.Handle (hFlush)
 import LibPainter (bgColor, col, horizontalRule, horizontalSpacer, row, text, textBold, textColor, textItalic, textUnderline, verticalRule, verticalSpacer)
-import System.IO (stdout)
 import System.Process (readProcess)
 import Text.Read (readMaybe)
 import Types.Config (Config (fill, flexHeight, flexWidth))
@@ -18,6 +16,7 @@ import Types.Element
     normaliseFlexorFloats,
     positionElements,
     render,
+    setMetadata,
     sizeFixedHorizontally,
     sizeFixedVertically,
     sizeFlexHorizontally,
@@ -27,8 +26,7 @@ import Types.Metadata (size)
 import Types.Size (Size (height, width))
 import Types.Style (Color (..))
 
--- TODO: Flatten metadata to just be flat keys?
-
+fillSize :: Float -> Element -> Element
 fillSize f = fillVertical f . fillHorizontal f
 
 border :: Element -> Element
@@ -39,14 +37,19 @@ border e =
       (fillHorizontal 1 . row) [text "╰", horizontalRule 1, text "╯"]
     ]
 
+fillHorizontal :: Float -> Element -> Element
 fillHorizontal f node@(Node {config}) = node {config = config {flexWidth = Just f}}
+fillHorizontal _ _ = undefined
 
+fillVertical :: Float -> Element -> Element
 fillVertical f node@(Node {config}) = node {config = config {flexHeight = Just f}}
+fillVertical _ _ = undefined
 
 fillBackground :: Char -> Element -> Element
 fillBackground x node@(Node {..}) = node {config = config {fill = x}}
 fillBackground x leaf@(Leaf {}) = leaf {s = [x]}
 
+t :: Element
 t =
   border $
     (textColor White . row)
@@ -65,8 +68,10 @@ t =
           ]
       ]
 
+padCenter :: Element -> Element
 padCenter e = row [horizontalSpacer 0.5, e, horizontalSpacer 0.5]
 
+tree0 :: Element
 tree0 =
   col
     [ col
@@ -88,13 +93,13 @@ getTerminalSize =
 
 main :: IO ()
 main = do
-  -- putStr "\ESC[?1049h\ESC[H" -- enter fullscreen terminal mode (TODO: Escape code to exit this)
-  (screenHeight, screenWidth) <- getTerminalSize >>= (\(lines, cols) -> return (lines, cols)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
-  let tree =
+  putStr "\ESC[?1049h\ESC[H" -- enter fullscreen terminal mode; go to the top left
+  (screenHeight, screenWidth) <- getTerminalSize >>= (\(termLines, termCols) -> return (termLines, termCols)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
+  let processedTree =
         ( positionElements
             . (\tree -> sizeFlexVertically (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.height) tree)
             . (\tree -> sizeFlexHorizontally (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.width) tree)
-            . (\case node@(Node {md}) -> node {md = md {size = md.size {width = fromIntegral screenWidth, height = fromIntegral screenHeight - 1}}})
+            . (`setMetadata` (\md -> md {size = md.size {width = fromIntegral screenWidth, height = fromIntegral screenHeight - 1}}))
             . sizeFixedVertically
             . sizeFixedHorizontally
             . normaliseFlexorFloats
@@ -111,7 +116,9 @@ main = do
                 )
           )
           . render
-        $ tree
+        $ processedTree
+
+-- putStr "\x1b[?1049l" -- exit fullscreen mode
 
 -- putStr "\ESC[H" -- put cursor in top left
 -- putStr "\r\ESC[KNew 1\n" -- Overwrite line 1
