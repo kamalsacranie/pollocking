@@ -57,16 +57,16 @@ text =
 
 -- TODO: Make versions that are sized with actual Ints
 horizontalSpacer :: Float -> Element
-horizontalSpacer f = defaultRowWith (mempty {fill = ' ', flexWidth = Just f, heightBound = upper mempty 0, widthBound = upper mempty 0}) []
+horizontalSpacer f = defaultRowWith (mempty {fill = Nothing, flexWidth = Just f, heightBound = upper mempty 0, widthBound = upper mempty 0}) []
 
 verticalSpacer :: Float -> Element
-verticalSpacer f = defaultColWith (mempty {fill = ' ', flexHeight = Just f, heightBound = upper mempty 0, widthBound = upper mempty 0}) []
+verticalSpacer f = defaultColWith (mempty {fill = Nothing, flexHeight = Just f, heightBound = upper mempty 0, widthBound = upper mempty 0}) []
 
 horizontalRule :: Float -> Element
-horizontalRule f = defaultRowWith (mempty {fill = '─', flexWidth = Just f, heightBound = lower mempty 1}) []
+horizontalRule f = defaultRowWith (mempty {fill = Just '─', flexWidth = Just f, heightBound = lower mempty 1}) []
 
 verticalRule :: Float -> Element
-verticalRule f = defaultColWith (mempty {fill = '│', flexHeight = Just f, widthBound = lower mempty 1}) []
+verticalRule f = defaultColWith (mempty {fill = Just '│', flexHeight = Just f, widthBound = lower mempty 1}) []
 
 bgColor :: Color -> Element -> Element
 bgColor c = flip setMetadata (\md -> md {style = md.style {bgColor = Just c}})

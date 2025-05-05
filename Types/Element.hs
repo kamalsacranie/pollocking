@@ -18,6 +18,7 @@ module Types.Element
   )
 where
 
+import Control.Applicative (Alternative((<|>)))
 import Control.Monad.State (State, get, modify, put)
 import Data.List (intercalate, mapAccumL, mapAccumR)
 import Data.Maybe (fromMaybe, isJust, maybeToList)
@@ -342,15 +343,21 @@ styleToFormatter ST {textColor, bgColor, textStyles} =
           textStyles
    in applyTextStyles . foldr ((.) . fromMaybe id) id [applyTextColor, applyBgColor] . (: []) . In
 
-render :: Element -> State Style Canvas
+data RenderState = RS { style :: Style, fill :: Maybe Char }
+instance Semigroup RenderState where
+  (<>) l r = RS { style = l.style <> r.style, fill = r.fill <|> l.fill}
+instance Monoid RenderState where
+  mempty = RS { style = mempty, fill = Nothing }
+
+render :: Element -> State RenderState Canvas
 render Node {md, children, config} = get >>= \initialState ->
-    modify (<> md.style)
-    *> foldl
+    modify (<> RS { fill = config.fill, style = md.style })
+    *> get >>= \s -> foldl
       (\acc child -> drawOnCanvas <$> acc <*> render child <*> (return $ getMetadata child))
-      (return $ createCanvas config.fill md.size)
+      (return $ createCanvas (fromMaybe ' ' s.fill) md.size)
       children
     <* put initialState
   
 -- TODO: Figure out how to make it explicit that leaves are always 1. Right now
 -- it is implicit...
-render (Leaf md s) = (: []) . (flip styleToFormatter) s . (<> md.style) <$> get
+render (Leaf md s) = (: []) . (flip styleToFormatter) s . (\RS {style} -> style <> md.style) <$> get

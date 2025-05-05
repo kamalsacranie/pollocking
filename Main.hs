@@ -47,7 +47,7 @@ fillVertical f node@(Node {config}) = node {config = config {flexHeight = Just f
 fillVertical _ _ = undefined
 
 fillBackground :: Char -> Element -> Element
-fillBackground x node@(Node {..}) = node {config = config {fill = x}}
+fillBackground x node@(Node {..}) = node {config = config {fill = Just x}}
 fillBackground x leaf@(Leaf {}) = leaf {s = [x]}
 
 t :: Element

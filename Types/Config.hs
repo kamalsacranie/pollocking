@@ -19,7 +19,7 @@ data Config = NC
     widthBound :: Bound,
     flexWidth :: Maybe Float,
     flexHeight :: Maybe Float,
-    fill :: Char
+    fill :: Maybe Char
   }
   deriving (Show, Eq)
 
@@ -30,11 +30,11 @@ instance Semigroup Config where
         widthBound = l.widthBound <> r.widthBound,
         flexWidth = max <$> l.flexWidth <*> r.flexWidth <|> l.flexWidth <|> r.flexWidth,
         flexHeight = max <$> l.flexHeight <*> r.flexHeight <|> l.flexHeight <|> r.flexHeight,
-        fill = if fill l == ' ' then fill r else fill l
+        fill = r.fill <|> l.fill
       }
 
 instance Monoid Config where
-  mempty = NC {heightBound = mempty, widthBound = mempty, fill = ' ', flexWidth = Nothing, flexHeight = Nothing}
+  mempty = NC {heightBound = mempty, widthBound = mempty, fill = Nothing, flexWidth = Nothing, flexHeight = Nothing}
 
 ------------------------------------------------------
 
