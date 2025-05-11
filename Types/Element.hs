@@ -12,6 +12,8 @@ module Types.Element
     sizeFlexVertically,
     render,
     getMetadata,
+    cascadeStyles,
+    cascadeFillCharacters,
     setMetadata,
     normaliseFlexorFloats,
     CanvasSequece (In, Out),
@@ -19,7 +21,6 @@ module Types.Element
 where
 
 import Control.Applicative (Alternative((<|>)))
-import Control.Monad.State (State, get, modify, put)
 import Data.List (intercalate, mapAccumL, mapAccumR)
 import Data.Maybe (fromMaybe, isJust, maybeToList)
 import Data.Word (Word16)
@@ -54,6 +55,24 @@ data Element
         s :: [Char]
       }
   deriving (Show, Eq)
+
+cascadeStyles :: Style -> Element -> Element
+cascadeStyles style x@Node {md, children} =
+  let cascadedStyle = md.style <> style in
+  x {
+    md = md { style = cascadedStyle }
+    , children = map (cascadeStyles cascadedStyle) children
+  }
+cascadeStyles style x@Leaf {md} = x { md = md { style = md.style <> style } }
+
+cascadeFillCharacters :: Maybe Char -> Element -> Element
+cascadeFillCharacters char x@Node {..} =
+  let cascadedFillCharacter = config.fill <|>  char in
+  x {
+    config = config { fill = cascadedFillCharacter }
+    , children = map (cascadeFillCharacters cascadedFillCharacter) children
+  }
+cascadeFillCharacters _ x@Leaf {} = x
 
 elementFixedWidths :: [Element] -> [Word16]
 elementFixedWidths =
@@ -286,8 +305,8 @@ type Canvas = [[CanvasSequece]]
 data CanvasSequece = In [Char] | Out [Char]
   deriving (Show, Eq)
 
-createCanvas :: Char -> Size -> Canvas
-createCanvas s size = replicate (fromIntegral size.height) [In $ replicate (fromIntegral size.width) s]
+createCanvas :: Char -> Size -> Style -> Canvas
+createCanvas s size style = replicate (fromIntegral size.height) $ styleToFormatter style $ replicate (fromIntegral size.width) s
 
 -- TODO: Right now our fold is super inneficient but this can be fixed with a
 -- mapAccumR and using cons but, we will have to reverse the pointer
@@ -322,6 +341,7 @@ styleToFormatter ST {textColor, bgColor, textStyles} =
   let applyBgColor =
         ( \(r, g, b) s ->
             Out ("\x1b[48;2;" ++ (intercalate ";" . map show) [r, g, b] ++ "m") : s ++ [Out "\x1b[49m"]
+            -- Out ("([") : s ++ [Out "])"]
         )
           . color
           <$> bgColor
@@ -343,21 +363,12 @@ styleToFormatter ST {textColor, bgColor, textStyles} =
           textStyles
    in applyTextStyles . foldr ((.) . fromMaybe id) id [applyTextColor, applyBgColor] . (: []) . In
 
-data RenderState = RS { style :: Style, fill :: Maybe Char }
-instance Semigroup RenderState where
-  (<>) l r = RS { style = l.style <> r.style, fill = r.fill <|> l.fill}
-instance Monoid RenderState where
-  mempty = RS { style = mempty, fill = Nothing }
-
-render :: Element -> State RenderState Canvas
-render Node {md, children, config} = get >>= \initialState ->
-    modify (<> RS { fill = config.fill, style = md.style })
-    *> get >>= \s -> foldl
-      (\acc child -> drawOnCanvas <$> acc <*> render child <*> (return $ getMetadata child))
-      (return $ createCanvas (fromMaybe ' ' s.fill) md.size)
+render :: Element -> Canvas
+render Node {md, children, config} =
+    foldl
+      (\acc child -> drawOnCanvas acc (render child) (getMetadata child))
+      (createCanvas (fromMaybe ' ' config.fill) md.size md.style)
       children
-    <* put initialState
-  
 -- TODO: Figure out how to make it explicit that leaves are always 1. Right now
 -- it is implicit...
-render (Leaf md s) = (: []) . (flip styleToFormatter) s . (\RS {style} -> style <> md.style) <$> get
+render (Leaf md s) = [styleToFormatter md.style s]

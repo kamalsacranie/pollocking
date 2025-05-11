@@ -4,18 +4,35 @@
 
 module Main where
 
-import Control.Monad.State (runState)
 import Data.List (intercalate)
 import Data.Maybe (fromMaybe, mapMaybe)
-import LibPainter (bgColor, col, horizontalRule, horizontalSpacer, row, text, textBold, textColor, textItalic, textUnderline, verticalRule, verticalSpacer)
+import Control.Arrow ((>>>))
+import LibPainter
+  ( fillVertical,
+    fillHorizontal,
+    bgColor,
+    col,
+    horizontalRule,
+    horizontalSpacer,
+    row,
+    text,
+    textBold,
+    textColor,
+    textItalic,
+    textUnderline,
+    verticalRule,
+    verticalSpacer,
+  )
 import System.Process (readProcess)
 import Text.Read (readMaybe)
-import Types.Config (Config (fill, flexHeight, flexWidth))
+import Types.Config (Config (fill))
 import Types.Element
   ( CanvasSequece (In, Out),
-    Element (Leaf, Node, children, config, md, s),
+    Element (Leaf, Node, config, md, s),
     normaliseFlexorFloats,
     positionElements,
+    cascadeStyles,
+    cascadeFillCharacters,
     render,
     setMetadata,
     sizeFixedHorizontally,
@@ -38,34 +55,29 @@ border e =
       (fillHorizontal 1 . row) [text "╰", horizontalRule 1, text "╯"]
     ]
 
-fillHorizontal :: Float -> Element -> Element
-fillHorizontal f node@(Node {config}) = node {config = config {flexWidth = Just f}}
-fillHorizontal _ _ = undefined
-
-fillVertical :: Float -> Element -> Element
-fillVertical f node@(Node {config}) = node {config = config {flexHeight = Just f}}
-fillVertical _ _ = undefined
-
 fillBackground :: Char -> Element -> Element
-fillBackground x node@(Node {..}) = node {config = config {fill = Just x}}
+fillBackground x node@(Node {config}) = node {config = config {fill = Just x}}
 fillBackground x leaf@(Leaf {}) = leaf {s = [x]}
 
 t :: Element
 t =
  border $
-    (fillBackground '.' . bgColor White . textColor Black . row)
+    row >>>
+      fillBackground '•'
+      . bgColor Darkblue
+      . textColor Orange1 $
       [ (fillVertical 1 . col)
-          [ verticalSpacer 0.5,
+          [ verticalSpacer 1,
             (textBold . textItalic . text) "This is the first column",
             fillHorizontal 1 . padCenter $ text "World",
-            verticalSpacer 0.5
+            verticalSpacer 1
           ],
         horizontalSpacer 0.5,
         verticalRule 1,
         horizontalSpacer 0.5,
-        col
-          [ (textUnderline . textBold . text) "This is the second column",
-            (fillHorizontal 1 . row) [horizontalSpacer 1, text "World"]
+        col >>> fillVertical 1 $
+          [ textUnderline . textBold . text $ "This is the second column",
+            row >>> fillHorizontal 1 $ [horizontalSpacer 1, text "World"]
           ]
       ]
 
@@ -79,7 +91,7 @@ tree0 =
         [ text "This is kinda crazy bro?? isn't it cool that I have this thingy??",
           text "this might get a bit annoying"
         ],
-      (fillVertical 1 . fillHorizontal 1) (padCenter (fillVertical 1 t))
+      fillSize 1 (padCenter (fillVertical 1 t))
     ]
 
 getTerminalSize :: IO (Maybe (Int, Int))
@@ -92,11 +104,11 @@ getTerminalSize =
     -- Maybe use a function that doesn't throw here? or handle the throw I guess
     <$> mapM (flip (readProcess "tput") "") [["lines"], ["cols"]]
 
-main :: IO ()
-main = do
-  putStr "\ESC[?1049h\ESC[H" -- enter fullscreen terminal mode; go to the top left
-  (screenHeight, screenWidth) <- getTerminalSize >>= (\(termLines, termCols) -> return (termLines, termCols)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
-  let processedTree =
+tempLoop :: (Integral t1, Integral t2) => t1 -> t2 -> IO b
+tempLoop screenWidth screenHeight = 
+  putStr "\ESC[H" *>
+ (let processedTree = (cascadeFillCharacters Nothing . cascadeStyles mempty) tree0
+      frameSpecificTree =
         ( positionElements
             . (\tree -> sizeFlexVertically (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.height) tree)
             . (\tree -> sizeFlexHorizontally (fromIntegral (case tree of Node {md} -> md; Leaf {md} -> md).size.width) tree)
@@ -105,7 +117,7 @@ main = do
             . sizeFixedHorizontally
             . normaliseFlexorFloats
         )
-          tree0
+          processedTree
    in putStrLn
         $ intercalate "\n"
         $ map
@@ -116,8 +128,17 @@ main = do
                     In chars -> chars
                 )
           )
-          . (\e -> fst $ runState (render e) mempty)
-        $ processedTree
+          . render
+        $ frameSpecificTree) *> tempLoop screenWidth screenHeight
+
+main :: IO ()
+main = do
+  putStr "\ESC[?1049h\ESC[H" -- enter fullscreen terminal mode; go to the top left
+  (screenHeight, screenWidth) <- getTerminalSize >>= (\(termLines, termCols) -> return (termLines, termCols)) . fromMaybe (error "Could not obtain terminal size. Are you running in a tty?")
+  tempLoop screenWidth screenHeight
+  -- TODO: This is nicer than having a state monad while rendering but having a
+  -- state monad while rendering is more efficient because we do two passes on
+  -- the tree here
 
 -- putStr "\x1b[?1049l" -- exit fullscreen mode
 
