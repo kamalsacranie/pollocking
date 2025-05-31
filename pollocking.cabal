@@ -16,6 +16,7 @@ executable temp
     , containers
     , binary
     , mtl
+    , template-haskell
   other-modules:
     LibPainter
     Types.ColConfig
@@ -27,4 +28,5 @@ executable temp
     Types.Size
     Types.Style
     Types.Variant
+    Utils
   default-language: GHC2024

@@ -56,12 +56,12 @@ text :: [Char] -> Element
 text =
   ( \case
       [] -> row []
-      [s] -> Leaf mempty $ unwords . words $ handleEscapeCode s
+      [s] -> Leaf mempty False $ unwords . words $ handleEscapeCode s
       textLines -> col $ map text textLines
   )
     . lines
   where
-    handleEscapeCode s = case s of
+    handleEscapeCode = \case
       [] -> ""
       [c] -> [c]
       '\x1b' : tl -> "\\x1b" ++ handleEscapeCode tl
@@ -69,7 +69,7 @@ text =
 
 fillHorizontal :: Float -> Element -> Element
 fillHorizontal f node@Node {config} = node {config = config {flexWidth = Just f}}
-fillHorizontal _ _ = undefined
+fillHorizontal f leaf = fillHorizontal f $ rowWith mempty mempty [leaf]
 
 fillVertical :: Float -> Element -> Element
 fillVertical f node@Node {config} = node {config = config {flexHeight = Just f}}

@@ -2,15 +2,19 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Types.Element
-  ( Element (Node, md, variant, config, children, Leaf, s),
+  ( Element (Node, md, variant, config, children, Leaf, wrap, s),
     sizeFixedHorizontally,
     sizeFixedVertically,
+    clipHorizontally,
     positionElements,
     sizeFlexHorizontally,
     sizeFlexVertically,
     render,
+    showCanvas,
+    wrapText,
     getMetadata,
     cascadeStyles,
     cascadeFillCharacters,
@@ -42,6 +46,7 @@ import Types.Position (Position (x, y))
 import Types.Size (Size (height, width))
 import Types.Style (Style (ST, bgColor, textColor, textStyles), TextStyle (Bold, Italic, Underline), color)
 import Types.Variant (Variant (Col, Row))
+import Utils ( chunksOf )
 
 data Element
   = Node
@@ -52,6 +57,7 @@ data Element
       }
   | Leaf
       { md :: Metadata,
+        wrap :: Bool,
         s :: [Char]
       }
   deriving (Show, Eq)
@@ -257,6 +263,25 @@ sizeFlexHorizontally parentFreeWidth node@(Node {children, md, variant, config})
         }
 sizeFlexHorizontally _ leaf@(Leaf {}) = leaf
 
+-- We want to wrap text when the leaf's horizontal size is bigger than it's parent's horizontal size
+-- && we have annotated the leaf as being able to wrap
+-- Remember that we must copy formatting over to keep all lines of text formatted the same
+-- We must also adjust the width of our leafs to reflect their new size. We can
+-- do this by running the element sizing functions from that point in the tree.
+-- There is some nuance here that I didn't realise. You need to maintain the minimum parent width
+--
+wrapText :: Word16 -> Element -> Element
+wrapText smallestAncestorWidth node@Node {md, children} = node { children = map (wrapText (min md.size.width smallestAncestorWidth)) children } 
+wrapText smallestAncestorWidth leaf@Leaf {md, wrap=True, s} = let strings = chunksOf (fromIntegral smallestAncestorWidth) s in
+  if md.size.width > smallestAncestorWidth then
+    Node {
+      md=md { size = md.size { width=smallestAncestorWidth, height = fromIntegral $ length strings }},
+      variant=Col mempty,
+      config=mempty,
+      children=map (Leaf md { size = md.size { width=smallestAncestorWidth } } True) strings
+      } else leaf
+wrapText _ leaf = leaf
+
 sizeFlexVertically :: Word16 -> Element -> Element
 sizeFlexVertically parentFreeHeight node@(Node {..}) =
   let newHeight = case config.flexHeight of
@@ -308,6 +333,16 @@ data CanvasSequece = In [Char] | Out [Char]
 createCanvas :: Char -> Size -> Style -> Canvas
 createCanvas s size style = replicate (fromIntegral size.height) $ styleToFormatter style $ replicate (fromIntegral size.width) s
 
+showCanvas :: Canvas -> [Char]
+showCanvas = intercalate "\n" . map
+          ( intercalate ""
+              . map
+                ( \case
+                    Out chars -> chars
+                    In chars -> chars
+                )
+          )
+
 -- TODO: Right now our fold is super inneficient but this can be fixed with a
 -- mapAccumR and using cons but, we will have to reverse the pointer
 -- calculation
@@ -341,7 +376,6 @@ styleToFormatter ST {textColor, bgColor, textStyles} =
   let applyBgColor =
         ( \(r, g, b) s ->
             Out ("\x1b[48;2;" ++ (intercalate ";" . map show) [r, g, b] ++ "m") : s ++ [Out "\x1b[49m"]
-            -- Out ("([") : s ++ [Out "])"]
         )
           . color
           <$> bgColor
@@ -371,4 +405,9 @@ render Node {md, children, config} =
       children
 -- TODO: Figure out how to make it explicit that leaves are always 1. Right now
 -- it is implicit...
-render (Leaf md s) = [styleToFormatter md.style s]
+render Leaf {md,s} = [styleToFormatter md.style s]
+
+clipHorizontally :: Word16 -> Canvas -> Canvas
+clipHorizontally width = map (snd . mapAccumL (\acc cs -> case cs of
+      In chars -> (max (acc - length chars) 0, In (take (min acc (length chars)) chars))
+      outChars -> (acc, outChars)) (fromIntegral width))
